@@ -13,8 +13,11 @@ from datetime import datetime
 from threading import Lock
 import numpy as np
 from collections import deque
-center_history = deque(maxlen=5)  # adjust smoothing window length
 
+# === Added histories for smoothing bounding box size ===
+center_history = deque(maxlen=8)  # smoothing window for center position
+width_history = deque(maxlen=8)   # smoothing window for bounding box width
+height_history = deque(maxlen=8)  # smoothing window for bounding box height
 
 camera_data = {
     "pixel_x": None,
@@ -69,8 +72,8 @@ def set_pwm(channel, pulse_width):
         
         
 def set_duty_cycle():
-    channel = 3
-    percent = 0.1 # example value, adjust as needed
+    channel = 12
+    percent = 0.15 # example value, adjust as needed
     percent = max(0, min(100, percent))
     ticks = int(percent * 4095 / 100)
     set_pwm(channel, ticks)
@@ -177,18 +180,26 @@ def camera_thread_func(zed):
                     cx = x_rect + w // 2
                     cy = y_rect + h // 2
 
-                    # Update history (no need for global keyword, since deque is mutable)
+                    # Update histories for smoothing
                     center_history.append((cx, cy))
+                    width_history.append(w)
+                    height_history.append(h)
 
-                    # Average over history for smoothness
+                    # Average over histories for smoothness
                     avg_cx = int(np.mean([p[0] for p in center_history]))
                     avg_cy = int(np.mean([p[1] for p in center_history]))
+                    avg_w = int(np.mean(width_history))
+                    avg_h = int(np.mean(height_history))
 
                     x, y = avg_cx, avg_cy
 
-                    cv2.rectangle(frame_bgr, (x_rect, y_rect), (x_rect + w, y_rect + h), (255, 0, 0), 2)
+                    # Draw rectangle and circle with smoothed values
+                    top_left = (avg_cx - avg_w // 2, avg_cy - avg_h // 2)
+                    bottom_right = (avg_cx + avg_w // 2, avg_cy + avg_h // 2)
+
+                    cv2.rectangle(frame_bgr, top_left, bottom_right, (255, 0, 0), 2)
                     cv2.circle(frame_bgr, (avg_cx, avg_cy), 5, (0, 0, 255), -1)
-                    cv2.putText(frame_bgr, "Blue Region", (x_rect, y_rect - 10),
+                    cv2.putText(frame_bgr, "Blue Region", (top_left[0], top_left[1] - 10),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
             if x is not None and y is not None:
@@ -228,11 +239,11 @@ def camera_thread_func(zed):
     print("Camera thread exiting.")
 
 def servo_thread_func(ser_x, ser_y, servo_x_id, servo_y_id):
-    x_start, x_end = 195, 232
-    y_start, y_end = 175, 210
+    x_start, x_end = 155, 185
+    y_start, y_end = 180, 235
     zigzag_gen = generate_zigzag_2d(x_start, x_end, 0.5, y_start, y_end, 0.5)
 
-    log_filename = "RF_Data_Arm3.csv"
+    log_filename = "J3_A1_data.csv"
     with open(log_filename, mode='w', newline='') as logfile:
         writer = csv.writer(logfile)
         writer.writerow(["Motor_X_Angle", "Motor_Y_Angle", "Pixel_X", "Pixel_Y", "Depth_m", "Pitch_deg", "Roll_deg"])
@@ -286,8 +297,8 @@ def main():
     print("Opening ZED camera...")
     zed = sl.Camera()
     init_params = sl.InitParameters()
-    init_params.camera_resolution = sl.RESOLUTION.HD1080
-    init_params.camera_fps = 30
+    init_params.camera_resolution = sl.RESOLUTION.HD1080  # Keep 1080p capture
+    init_params.camera_fps = 60
     if zed.open(init_params) != sl.ERROR_CODE.SUCCESS:
         print("❌ Failed to open ZED camera")
         return
@@ -309,8 +320,8 @@ def main():
     for port in set(servo_to_port.values()):
         port_connections[port] = serial.Serial(port, baudrate=baud, timeout=0.1)
 
-    servo_x_id = 3 # Servo IDS
-    servo_y_id = 8
+    servo_x_id = 2 # Servo IDS
+    servo_y_id = 1
     
     
     ser_x = port_connections.get(servo_to_port.get(servo_x_id))
@@ -329,11 +340,15 @@ def main():
     servo_thread.start()
 
     # Display frames from the queue (in main thread)
-    cv2.namedWindow("ZED X Mini Preview", cv2.WINDOW_NORMAL)
+    #cv2.namedWindow("ZED X Mini Preview", cv2.WINDOW_NORMAL)
     while not stop:
         if not frame_queue.empty():
             frame = frame_queue.get()
-            cv2.imshow("ZED X Mini Preview", frame)
+
+            # Resize frame to 640x480 for display
+            frame_resized = cv2.resize(frame, (640, 480))
+            
+            cv2.imshow("ZED X Mini Preview", frame_resized)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 stop = True
                 break
@@ -352,3 +367,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
